@@ -231,6 +231,7 @@ local function selectEsx(where, p)
     return sorted(out)
 end
 
+nulls = 0
 local function run(sql, p)
     p = p or {}
     queries[#queries + 1] = { sql = sql, params = p }
@@ -298,10 +299,47 @@ local function run(sql, p)
     error('unhandled sql: ' .. sql)
 end
 
+-- DB.update writes nils into the SQL as NULL. Put them back as nil params so
+-- run() sees the plain statement.
+local nulled = {}
+local function unfill(sql, p)
+    if #nulled == 0 then
+        local S = DB.sql
+        nulled = { S.qb.store, S.qb.state, S.esx.store, S.esx.state, S.upsert }
+    end
+    for _, tpl in ipairs(nulled) do
+        local parts = {}
+        for part in (tpl .. '?'):gmatch('(.-)%?') do parts[#parts + 1] = part end
+        local pos, k, out, ok = 1, 1, {}, true
+        for i, seg in ipairs(parts) do
+            if sql:sub(pos, pos + #seg - 1) ~= seg then ok = false break end
+            pos = pos + #seg
+            if i < #parts then
+                if sql:sub(pos, pos) == '?' then
+                    out[i], k, pos = p[k], k + 1, pos + 1
+                elseif sql:sub(pos, pos + 3) == 'NULL' then
+                    pos = pos + 4
+                else
+                    ok = false
+                    break
+                end
+            end
+        end
+        if ok and pos == #sql + 1 then
+            nulls = nulls + (#parts - 1) - (k - 1)
+            return tpl, out
+        end
+    end
+    return sql, p
+end
+
 MySQL = {
     query = { await = function(sql, p) return run(sql, p) end },
     single = { await = function(sql, p) return run(sql, p)[1] end },
-    update = { await = function(sql, p) return run(sql, p) end },
+    update = { await = function(sql, p)
+        for i = 1, #(p or {}) do assert(p[i] ~= nil, 'gap in params') end
+        return run(unfill(sql, p))
+    end },
 }
 
 local function queried(pattern)
@@ -757,6 +795,8 @@ do -- ESX
     ok = call('fivegarage:recover', 1, 'davis', 'ESX1')
     check('esx fee from cash when the bank is empty', ok == true and esxPlayers[1].accounts.money.money == 50)
 end
+
+check('nils sent as NULL, never as gaps', nulls > 0)
 
 io.write(('%d passed, %d failed\n'):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)

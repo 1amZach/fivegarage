@@ -30,6 +30,20 @@ DB.sql = {
 
 local function sql() return Framework.name() == 'esx' and DB.sql.esx or DB.sql.qb end
 
+-- A Lua list with a nil in it reaches oxmysql as a map, not a list, so nils
+-- are written into the SQL as NULL and only real values are sent.
+function DB.update(query, ...)
+    local values, params, i = { ... }, {}, 0
+    local n = select('#', ...)
+    query = query:gsub('%?', function()
+        i = i + 1
+        if i > n or values[i] == nil then return 'NULL' end
+        params[#params + 1] = values[i]
+    end)
+    return MySQL.update.await(query, params)
+end
+local update = DB.update
+
 local function decode(s)
     if type(s) == 'table' then return s end
     if type(s) ~= 'string' or s == '' then return {} end
@@ -93,12 +107,12 @@ end
 function DB.store(plate, garage, props, fuel, engine, body)
     local s = sql()
     if s == DB.sql.esx then
-        local n = MySQL.update.await(s.store, { json.encode(props), plate })
-        MySQL.update.await(upsert, { plate, garage, 1, 0, nil, fuel, engine, body })
+        local n = update(s.store, json.encode(props), plate)
+        update(upsert, plate, garage, 1, 0, nil, fuel, engine, body)
         return (n or 0) > 0
     end
-    local n = MySQL.update.await(s.store, { garage, json.encode(props), fuel, engine, body, plate })
-    MySQL.update.await(upsert, { plate, garage, 1, 0, nil, nil, nil, nil })
+    local n = update(s.store, garage, json.encode(props), fuel, engine, body, plate)
+    update(upsert, plate, garage, 1, 0, nil, nil, nil, nil)
     return (n or 0) > 0
 end
 
@@ -107,11 +121,11 @@ function DB.setState(plate, state, garage, fee, reason)
     fee = math.floor(tonumber(fee) or 0)
     local n
     if s == DB.sql.esx then
-        n = MySQL.update.await(s.state, { state == 1 and 1 or 0, plate })
+        n = update(s.state, state == 1 and 1 or 0, plate)
     else
-        n = MySQL.update.await(s.state, { state, garage, fee, plate })
+        n = update(s.state, state, garage, fee, plate)
     end
-    MySQL.update.await(upsert, { plate, garage, state, fee, reason, nil, nil, nil })
+    update(upsert, plate, garage, state, fee, reason, nil, nil, nil)
     return (n or 0) > 0
 end
 
